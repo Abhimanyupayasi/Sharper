@@ -4,3 +4,10 @@ so you can set alarm of date and time and it will populate in the screen task - 
 like - birthday , work . meetings , important date or dinner
 
 complted - phase 1 sprint for calender part..
+
+
+Shortcut	Meaning	Stored block type
+.h	Heading	heading
+.p	Paragraph	paragraph
+.b	Bullet point	bullet
+.n	Numbered point	numbered

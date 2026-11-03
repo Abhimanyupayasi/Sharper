@@ -1,5 +1,6 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "expo-router";
 
-import { useState } from "react";
 import {
   View,
   Text,
@@ -7,499 +8,1013 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Modal,
   Alert,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
+
 import { SafeAreaView } from "react-native-safe-area-context";
+
 import {
-  Search,
   Plus,
-  ChevronRight,
-  ArrowLeft,
+  Search,
+  Folder,
+  NotebookPen,
   BookOpen,
-  Lightbulb,
-  FolderOpen,
+  MoreVertical,
+  Pencil,
+  Trash2,
   X,
+  Check,
+  Layers,
 } from "lucide-react-native";
 
-type Category = {
-  id: string;
-  name: string;
-  description: string;
-  pointCount: number;
-  chapterCount: number;
-  color: string;
-};
+import { useSQLiteContext } from "expo-sqlite";
 
-const initialCategories: Category[] = [
-  {
-    id: "1",
-    name: "Mathematics",
-    description: "Formulas and concepts",
-    pointCount: 12,
-    chapterCount: 5,
-    color: "#635BFF",
-  },
-  {
-    id: "2",
-    name: "Chemistry",
-    description: "Reactions and chapters",
-    pointCount: 8,
-    chapterCount: 7,
-    color: "#0D9488",
-  },
-  {
-    id: "3",
-    name: "Physics",
-    description: "Laws and definitions",
-    pointCount: 15,
-    chapterCount: 4,
-    color: "#EA8A24",
-  },
+import {
+  Category,
+  createCategory,
+  getCategories,
+  updateCategory,
+  deleteCategory,
+} from "../../database/repositories/category.repository";
+
+const COLORS = [
+  "#635BFF",
+  "#0D9488",
+  "#F59E0B",
+  "#EF4444",
+  "#EC4899",
+  "#3B82F6",
+  "#8B5CF6",
+  "#16A34A",
 ];
 
 export default function NotesScreen() {
-  const [categories, setCategories] = useState(initialCategories);
-  const [selectedCategory, setSelectedCategory] =
-    useState<Category | null>(null);
+  const db = useSQLiteContext();
+  const router = useRouter();
+
+  const [categories, setCategories] = useState<Category[]>([]);
   const [search, setSearch] = useState("");
 
-  const [showAddCategory, setShowAddCategory] = useState(false);
-  const [newCategory, setNewCategory] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
 
-  const filteredCategories = categories.filter((category) =>
-    category.name.toLowerCase().includes(search.toLowerCase())
+  const [modalVisible, setModalVisible] = useState(false);
+  const [editingCategory, setEditingCategory] =
+    useState<Category | null>(null);
+
+  const [categoryName, setCategoryName] = useState("");
+  const [selectedColor, setSelectedColor] = useState(COLORS[0]);
+
+  const [menuCategory, setMenuCategory] = useState<Category | null>(null);
+
+  // LOAD CATEGORIES FROM SQLITE
+  const loadCategories = useCallback(async () => {
+    try {
+      setLoading(true);
+
+      const result = await getCategories(db);
+      setCategories(result);
+    } catch (error) {
+      console.error("Category loading error:", error);
+      Alert.alert("Error", "Unable to load categories.");
+    } finally {
+      setLoading(false);
+    }
+  }, [db]);
+
+  useEffect(() => {
+    loadCategories();
+  }, [loadCategories]);
+
+  // SEARCH CATEGORIES
+  const filteredCategories = useMemo(() => {
+    const query = search.trim().toLowerCase();
+
+    if (!query) return categories;
+
+    return categories.filter((category) =>
+      category.name.toLowerCase().includes(query)
+    );
+  }, [categories, search]);
+
+  // SUMMARY
+  const totalPointNotes = categories.reduce(
+    (total, item) => total + (item.point_note_count ?? 0),
+    0
   );
 
-  const addCategory = () => {
-    const name = newCategory.trim();
+  const totalChapters = categories.reduce(
+    (total, item) => total + (item.chapter_count ?? 0),
+    0
+  );
 
-    if (!name) return;
+  // OPEN CATEGORY
+  const openCategory = (category: Category) => {
+    setMenuCategory(null);
 
-    if (categories.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
-      Alert.alert("Already exists", "This category already exists.");
+    router.push({
+      pathname: "/category/[id]",
+      params: { id: category.id },
+    });
+  };
+
+  // OPEN CREATE MODAL
+  const openCreateModal = () => {
+    setEditingCategory(null);
+    setCategoryName("");
+    setSelectedColor(COLORS[0]);
+    setModalVisible(true);
+  };
+
+  // OPEN EDIT MODAL
+  const openEditModal = (category: Category) => {
+    setEditingCategory(category);
+    setCategoryName(category.name);
+    setSelectedColor(category.color);
+    setMenuCategory(null);
+    setModalVisible(true);
+  };
+
+  // CLOSE MODAL
+  const closeModal = () => {
+    if (submitting) return;
+
+    setModalVisible(false);
+    setEditingCategory(null);
+    setCategoryName("");
+    setSelectedColor(COLORS[0]);
+  };
+
+  // CREATE / UPDATE CATEGORY
+  const handleSaveCategory = async () => {
+    const cleanName = categoryName.trim();
+
+    if (!cleanName) {
+      Alert.alert("Required", "Please enter a category name.");
       return;
     }
 
-    setCategories((previous) => [
-      ...previous,
-      {
-        id: Date.now().toString(),
-        name,
-        description: "Your personal collection",
-        pointCount: 0,
-        chapterCount: 0,
-        color: "#635BFF",
-      },
-    ]);
+    try {
+      setSubmitting(true);
 
-    setNewCategory("");
-    setShowAddCategory(false);
+      if (editingCategory) {
+        await updateCategory(
+          db,
+          editingCategory.id,
+          cleanName,
+          selectedColor
+        );
+      } else {
+        await createCategory(db, cleanName, selectedColor);
+      }
+
+      setModalVisible(false);
+      setEditingCategory(null);
+      setCategoryName("");
+      setSelectedColor(COLORS[0]);
+
+      await loadCategories();
+
+      Alert.alert(
+        "Success",
+        editingCategory
+          ? "Category updated successfully."
+          : "Category created successfully."
+      );
+    } catch (error) {
+      console.error("Category save error:", error);
+
+      const message = String(error).toLowerCase();
+
+      if (
+        message.includes("unique constraint") ||
+        message.includes("categories.name")
+      ) {
+        Alert.alert(
+          "Duplicate category",
+          "A category with this name already exists."
+        );
+      } else {
+        Alert.alert("Error", "Unable to save category. Please try again.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
+
+  // DELETE CATEGORY
+  const confirmDeleteCategory = (category: Category) => {
+    setMenuCategory(null);
+
+    const pointCount = category.point_note_count ?? 0;
+    const chapterCount = category.chapter_count ?? 0;
+
+    Alert.alert(
+      "Delete Category",
+      `Are you sure you want to delete "${category.name}"?\n\nThis will also permanently delete:\n• ${pointCount} Point Notes\n• ${chapterCount} Chapters and their content`,
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteCategory(db, category.id);
+              await loadCategories();
+
+              Alert.alert("Deleted", "Category deleted successfully.");
+            } catch (error) {
+              console.error("Category deletion error:", error);
+              Alert.alert("Error", "Unable to delete category.");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // CATEGORY CARD
+  const renderCategory = (category: Category) => (
+    <View key={category.id} style={styles.categoryCard}>
+      <View style={styles.categoryTop}>
+        <Pressable
+          style={styles.categoryMain}
+          onPress={() => openCategory(category)}
+        >
+          <View
+            style={[
+              styles.categoryIcon,
+              { backgroundColor: `${category.color}18` },
+            ]}
+          >
+            <Folder color={category.color} size={23} />
+          </View>
+
+          <View style={styles.categoryInfo}>
+            <Text style={styles.categoryName}>{category.name}</Text>
+            <Text style={styles.categoryHint}>Open category</Text>
+          </View>
+        </Pressable>
+
+        <Pressable
+          style={styles.menuButton}
+          onPress={() =>
+            setMenuCategory(
+              menuCategory?.id === category.id ? null : category
+            )
+          }
+          hitSlop={8}
+        >
+          <MoreVertical color="#64748B" size={21} />
+        </Pressable>
+      </View>
+
+      <Pressable
+        onPress={() => openCategory(category)}
+        style={styles.categoryStats}
+      >
+        <View style={styles.statItem}>
+          <NotebookPen size={14} color="#64748B" />
+          <Text style={styles.statText}>
+            {category.point_note_count ?? 0} Point Notes
+          </Text>
+        </View>
+
+        <View style={styles.statItem}>
+          <BookOpen size={14} color="#64748B" />
+          <Text style={styles.statText}>
+            {category.chapter_count ?? 0} Chapters
+          </Text>
+        </View>
+      </Pressable>
+
+      {menuCategory?.id === category.id && (
+        <View style={styles.menuDropdown}>
+          <Pressable
+            style={styles.menuItem}
+            onPress={() => openEditModal(category)}
+          >
+            <Pencil size={16} color="#475569" />
+            <Text style={styles.menuText}>Edit Category</Text>
+          </Pressable>
+
+          <View style={styles.menuDivider} />
+
+          <Pressable
+            style={styles.menuItem}
+            onPress={() => confirmDeleteCategory(category)}
+          >
+            <Trash2 size={16} color="#DC2626" />
+            <Text style={[styles.menuText, { color: "#DC2626" }]}>
+              Delete Category
+            </Text>
+          </Pressable>
+        </View>
+      )}
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
+      <Pressable
+        style={{ flex: 1 }}
+        onPress={() => {
+          if (menuCategory) setMenuCategory(null);
+        }}
       >
-        {/* HEADER */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.heading}>My Notes</Text>
-            <Text style={styles.subtitle}>
-              Your personal knowledge library.
-            </Text>
-          </View>
-
-          <View style={styles.headerIcon}>
-            <BookOpen color="#635BFF" size={24} />
-          </View>
-        </View>
-
-        {/* CATEGORY DETAIL */}
-        {selectedCategory ? (
-          <>
-            <Pressable
-              style={styles.backButton}
-              onPress={() => setSelectedCategory(null)}
-            >
-              <ArrowLeft size={18} color="#635BFF" />
-              <Text style={styles.backText}>All Categories</Text>
-            </Pressable>
-
-            <View style={styles.categoryDetail}>
-              <View
-                style={[
-                  styles.categoryIcon,
-                  { backgroundColor: selectedCategory.color + "18" },
-                ]}
-              >
-                <FolderOpen color={selectedCategory.color} size={30} />
-              </View>
-
-              <Text style={styles.detailTitle}>
-                {selectedCategory.name}
-              </Text>
-
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* HEADER */}
+          <View style={styles.header}>
+            <View>
+              <Text style={styles.heading}>My Notes</Text>
               <Text style={styles.subtitle}>
-                {selectedCategory.description}
+                Organize your knowledge, one note at a time.
               </Text>
             </View>
 
-            <Text style={styles.sectionTitle}>Choose note type</Text>
+            <View style={styles.headerIcon}>
+              <NotebookPen color="#635BFF" size={25} />
+            </View>
+          </View>
+
+          {/* SUMMARY */}
+          <View style={styles.summaryContainer}>
+            <View style={styles.summaryCard}>
+              <View style={styles.summaryIcon}>
+                <Folder color="#635BFF" size={19} />
+              </View>
+
+              <Text style={styles.summaryNumber}>{categories.length}</Text>
+              <Text style={styles.summaryLabel}>Categories</Text>
+            </View>
+
+            <View style={styles.summaryCard}>
+              <View style={styles.summaryIcon}>
+                <NotebookPen color="#0D9488" size={19} />
+              </View>
+
+              <Text style={styles.summaryNumber}>{totalPointNotes}</Text>
+              <Text style={styles.summaryLabel}>Point Notes</Text>
+            </View>
+
+            <View style={styles.summaryCard}>
+              <View style={styles.summaryIcon}>
+                <BookOpen color="#F59E0B" size={19} />
+              </View>
+
+              <Text style={styles.summaryNumber}>{totalChapters}</Text>
+              <Text style={styles.summaryLabel}>Chapters</Text>
+            </View>
+          </View>
+
+          {/* CATEGORY HEADER */}
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>Your Categories</Text>
+              <Text style={styles.sectionSubtitle}>
+                {categories.length} categories created
+              </Text>
+            </View>
 
             <Pressable
-              style={styles.typeCard}
-              onPress={() =>
-                Alert.alert("Point Notes", "We'll build the point notes editor next.")
-              }
+              style={styles.addButton}
+              onPress={openCreateModal}
             >
-              <View style={[styles.typeIcon, { backgroundColor: "#EEF2FF" }]}>
-                <Lightbulb color="#635BFF" size={25} />
-              </View>
-
-              <View style={styles.typeContent}>
-                <Text style={styles.typeTitle}>Point Notes</Text>
-                <Text style={styles.typeDescription}>
-                  Short notes, ideas, definitions and important points.
-                </Text>
-                <Text style={styles.countText}>
-                  {selectedCategory.pointCount} notes
-                </Text>
-              </View>
-
-              <ChevronRight color="#94A3B8" size={21} />
+              <Plus size={18} color="#FFFFFF" />
+              <Text style={styles.addButtonText}>Add New</Text>
             </Pressable>
+          </View>
 
-            <Pressable
-              style={styles.typeCard}
-              onPress={() =>
-                Alert.alert("Chapter Notes", "We'll build the chapter notes editor next.")
-              }
-            >
-              <View style={[styles.typeIcon, { backgroundColor: "#E0F2FE" }]}>
-                <BookOpen color="#0284C7" size={25} />
+          {/* SEARCH */}
+          <View style={styles.searchContainer}>
+            <Search size={19} color="#94A3B8" />
+
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search categories..."
+              placeholderTextColor="#94A3B8"
+              value={search}
+              onChangeText={setSearch}
+            />
+
+            {search.length > 0 && (
+              <Pressable onPress={() => setSearch("")}>
+                <X size={18} color="#64748B" />
+              </Pressable>
+            )}
+          </View>
+
+          {/* CATEGORY LIST */}
+          {loading ? (
+            <View style={styles.centerState}>
+              <ActivityIndicator size="large" color="#635BFF" />
+              <Text style={styles.stateText}>
+                Loading your categories...
+              </Text>
+            </View>
+          ) : filteredCategories.length > 0 ? (
+            <View style={styles.categoryGrid}>
+              {filteredCategories.map(renderCategory)}
+            </View>
+          ) : (
+            <View style={styles.emptyState}>
+              <View style={styles.emptyIcon}>
+                <Layers size={34} color="#635BFF" />
               </View>
 
-              <View style={styles.typeContent}>
-                <Text style={styles.typeTitle}>Chapter Notes</Text>
-                <Text style={styles.typeDescription}>
-                  Organize detailed notes chapter by chapter.
-                </Text>
-                <Text style={styles.countText}>
-                  {selectedCategory.chapterCount} chapters
-                </Text>
-              </View>
+              <Text style={styles.emptyTitle}>
+                {search ? "No categories found" : "No categories yet"}
+              </Text>
 
-              <ChevronRight color="#94A3B8" size={21} />
-            </Pressable>
-          </>
-        ) : (
-          <>
-            {/* SEARCH */}
-            <View style={styles.searchBox}>
-              <Search color="#94A3B8" size={20} />
-              <TextInput
-                value={search}
-                onChangeText={setSearch}
-                placeholder="Search categories..."
-                placeholderTextColor="#94A3B8"
-                style={styles.searchInput}
-              />
-              {search.length > 0 && (
-                <Pressable onPress={() => setSearch("")}>
-                  <X color="#94A3B8" size={18} />
+              <Text style={styles.emptyDescription}>
+                {search
+                  ? "Try another search term."
+                  : "Create your first category to start organizing your notes."}
+              </Text>
+
+              {!search && (
+                <Pressable
+                  style={styles.emptyButton}
+                  onPress={openCreateModal}
+                >
+                  <Plus size={17} color="#FFFFFF" />
+                  <Text style={styles.addButtonText}>Create Category</Text>
                 </Pressable>
               )}
             </View>
+          )}
 
-            {/* SUMMARY */}
-            <View style={styles.summaryCard}>
+          <Text style={styles.footerText}>
+            Your knowledge, organized in one place.
+          </Text>
+        </ScrollView>
+      </Pressable>
+
+      {/* CREATE / EDIT MODAL */}
+      <Modal
+        visible={modalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={closeModal}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={closeModal}
+          />
+
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.summaryLabel}>YOUR LIBRARY</Text>
-                <Text style={styles.summaryNumber}>
-                  {categories.length} Categories
+                <Text style={styles.modalTitle}>
+                  {editingCategory ? "Edit Category" : "Create Category"}
                 </Text>
-                <Text style={styles.summaryDescription}>
-                  Keep everything organized.
+
+                <Text style={styles.modalSubtitle}>
+                  Organize your notes by subject or topic.
                 </Text>
               </View>
 
-              <BookOpen color="#FFFFFF" size={35} />
-            </View>
-
-            {/* CATEGORY HEADER */}
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Categories</Text>
-
               <Pressable
-                style={styles.addButton}
-                onPress={() => setShowAddCategory(true)}
+                style={styles.closeButton}
+                onPress={closeModal}
               >
-                <Plus color="#FFFFFF" size={19} />
-                <Text style={styles.addButtonText}>New</Text>
+                <X size={20} color="#64748B" />
               </Pressable>
             </View>
 
-            {/* ADD CATEGORY */}
-            {showAddCategory && (
-              <View style={styles.addCategoryCard}>
-                <Text style={styles.addCategoryTitle}>
-                  Create a category
-                </Text>
+            {/* NAME */}
+            <Text style={styles.inputLabel}>Category Name *</Text>
 
-                <TextInput
-                  style={styles.categoryInput}
-                  placeholder="Category name"
-                  placeholderTextColor="#94A3B8"
-                  value={newCategory}
-                  onChangeText={setNewCategory}
-                  autoFocus
-                />
+            <TextInput
+              style={styles.modalInput}
+              placeholder="e.g. Mathematics"
+              placeholderTextColor="#94A3B8"
+              value={categoryName}
+              onChangeText={setCategoryName}
+              maxLength={50}
+              autoFocus
+              editable={!submitting}
+            />
 
-                <View style={styles.addActions}>
-                  <Pressable
-                    onPress={() => {
-                      setShowAddCategory(false);
-                      setNewCategory("");
-                    }}
-                  >
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </Pressable>
+            <Text style={styles.inputHint}>
+              {categoryName.length}/50 characters
+            </Text>
 
-                  <Pressable style={styles.createButton} onPress={addCategory}>
-                    <Text style={styles.createText}>Create</Text>
-                  </Pressable>
-                </View>
-              </View>
-            )}
+            {/* COLOR */}
+            <Text style={styles.inputLabel}>Choose Category Color</Text>
 
-            {/* CATEGORY LIST */}
-            {filteredCategories.length > 0 ? (
-              filteredCategories.map((category) => (
+            <View style={styles.colorContainer}>
+              {COLORS.map((color) => (
                 <Pressable
-                  key={category.id}
-                  style={styles.categoryCard}
-                  onPress={() => setSelectedCategory(category)}
+                  key={color}
+                  style={[
+                    styles.colorOption,
+                    { backgroundColor: color },
+                    selectedColor === color && styles.selectedColor,
+                  ]}
+                  onPress={() => setSelectedColor(color)}
+                  disabled={submitting}
                 >
-                  <View
-                    style={[
-                      styles.categoryIcon,
-                      { backgroundColor: category.color + "18" },
-                    ]}
-                  >
-                    <FolderOpen color={category.color} size={24} />
-                  </View>
-
-                  <View style={styles.categoryContent}>
-                    <Text style={styles.categoryName}>
-                      {category.name}
-                    </Text>
-
-                    <Text style={styles.categoryDescription}>
-                      {category.description}
-                    </Text>
-
-                    <Text style={styles.categoryCounts}>
-                      {category.pointCount} point notes · {category.chapterCount} chapters
-                    </Text>
-                  </View>
-
-                  <ChevronRight color="#94A3B8" size={21} />
+                  {selectedColor === color && (
+                    <Check size={19} color="#FFFFFF" />
+                  )}
                 </Pressable>
-              ))
-            ) : (
-              <Text style={styles.emptyText}>
-                No matching categories found.
+              ))}
+            </View>
+
+            {/* PREVIEW */}
+            <Text style={styles.inputLabel}>Preview</Text>
+
+            <View style={styles.previewCard}>
+              <View
+                style={[
+                  styles.previewIcon,
+                  { backgroundColor: `${selectedColor}18` },
+                ]}
+              >
+                <Folder color={selectedColor} size={22} />
+              </View>
+
+              <Text style={styles.previewName}>
+                {categoryName.trim() || "Category Name"}
               </Text>
-            )}
-          </>
-        )}
-      </ScrollView>
+            </View>
+
+            {/* ACTIONS */}
+            <Pressable
+              style={[
+                styles.modalSaveButton,
+                (submitting || !categoryName.trim()) &&
+                  styles.disabledButton,
+              ]}
+              onPress={handleSaveCategory}
+              disabled={submitting || !categoryName.trim()}
+            >
+              {submitting ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Check size={19} color="#FFFFFF" />
+                  <Text style={styles.modalSaveText}>
+                    {editingCategory ? "Update Category" : "Create Category"}
+                  </Text>
+                </>
+              )}
+            </Pressable>
+
+            <Pressable
+              style={styles.cancelButton}
+              onPress={closeModal}
+              disabled={submitting}
+            >
+              <Text style={styles.cancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F8FAFC" },
-  content: { padding: 20, paddingBottom: 35 },
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+  },
+
+  content: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 35,
+  },
+
   header: {
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 25,
   },
-  heading: { fontSize: 27, fontWeight: "700", color: "#172033" },
-  subtitle: { fontSize: 13, color: "#64748B", marginTop: 6 },
-  headerIcon: {
-    backgroundColor: "#EFEEFF",
-    padding: 13,
-    borderRadius: 15,
-  },
-  searchBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 15,
-    borderRadius: 14,
-    height: 53,
-    gap: 12,
-  },
-  searchInput: { flex: 1, color: "#172033", fontSize: 14 },
-  summaryCard: {
-    backgroundColor: "#635BFF",
-    borderRadius: 18,
-    padding: 20,
-    marginTop: 22,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  summaryLabel: {
-    color: "#DAD8FF",
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 1,
-  },
-  summaryNumber: {
-    color: "#FFFFFF",
-    fontSize: 23,
-    fontWeight: "700",
-    marginTop: 8,
-  },
-  summaryDescription: { color: "#E0DEFF", fontSize: 12, marginTop: 5 },
-  sectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 30,
-    marginBottom: 15,
-  },
-  sectionTitle: {
-    fontSize: 19,
+
+  heading: {
+    fontSize: 26,
     fontWeight: "700",
     color: "#172033",
+  },
+
+  subtitle: {
+    fontSize: 12,
+    color: "#64748B",
+    marginTop: 6,
+  },
+
+  headerIcon: {
+    backgroundColor: "#F0EFFF",
+    padding: 12,
+    borderRadius: 14,
+  },
+
+  summaryContainer: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 30,
+  },
+
+  summaryCard: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 15,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+
+  summaryIcon: {
+    marginBottom: 10,
+  },
+
+  summaryNumber: {
+    fontSize: 21,
+    fontWeight: "700",
+    color: "#172033",
+  },
+
+  summaryLabel: {
+    fontSize: 10,
+    color: "#64748B",
+    marginTop: 3,
+  },
+
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 15,
   },
+
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#172033",
+  },
+
+  sectionSubtitle: {
+    fontSize: 12,
+    color: "#94A3B8",
+    marginTop: 4,
+  },
+
   addButton: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 6,
     backgroundColor: "#635BFF",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
     borderRadius: 11,
   },
-  addButtonText: { color: "#FFFFFF", fontWeight: "600", fontSize: 12 },
+
+  addButtonText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  searchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 13,
+    paddingHorizontal: 14,
+    marginBottom: 18,
+  },
+
+  searchInput: {
+    flex: 1,
+    height: 48,
+    fontSize: 14,
+    color: "#172033",
+  },
+
+  categoryGrid: {
+    gap: 13,
+  },
+
   categoryCard: {
     backgroundColor: "#FFFFFF",
+    padding: 17,
     borderRadius: 16,
-    padding: 15,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    position: "relative",
+  },
+
+  categoryTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+
+  categoryMain: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 13,
-    marginBottom: 12,
+    gap: 12,
+  },
+
+  categoryInfo: {
+    flex: 1,
+  },
+
+  categoryIcon: {
+    padding: 12,
+    borderRadius: 13,
+  },
+
+  menuButton: {
+    padding: 5,
+  },
+
+  categoryName: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#172033",
+  },
+
+  categoryHint: {
+    fontSize: 11,
+    color: "#94A3B8",
+    marginTop: 3,
+  },
+
+  categoryStats: {
+    flexDirection: "row",
+    gap: 18,
+    marginTop: 4,
+  },
+
+  statItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  statText: {
+    fontSize: 11,
+    color: "#64748B",
+  },
+
+  menuDropdown: {
+    position: "absolute",
+    right: 15,
+    top: 48,
+    zIndex: 10,
+    elevation: 8,
+    backgroundColor: "#FFFFFF",
+    width: 180,
+    borderRadius: 12,
+    padding: 6,
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  categoryIcon: {
-    width: 49,
-    height: 49,
-    borderRadius: 14,
+
+  menuItem: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 10,
+    padding: 11,
   },
-  categoryContent: { flex: 1 },
-  categoryName: { color: "#172033", fontSize: 16, fontWeight: "700" },
-  categoryDescription: { color: "#64748B", fontSize: 12, marginTop: 4 },
-  categoryCounts: {
+
+  menuText: {
+    fontSize: 13,
+    color: "#334155",
+    fontWeight: "500",
+  },
+
+  menuDivider: {
+    height: 1,
+    backgroundColor: "#E2E8F0",
+  },
+
+  centerState: {
+    alignItems: "center",
+    paddingVertical: 60,
+  },
+
+  stateText: {
+    color: "#64748B",
+    marginTop: 12,
+    fontSize: 13,
+  },
+
+  emptyState: {
+    alignItems: "center",
+    paddingHorizontal: 25,
+    paddingVertical: 45,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+
+  emptyIcon: {
+    backgroundColor: "#F0EFFF",
+    padding: 17,
+    borderRadius: 18,
+    marginBottom: 16,
+  },
+
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#172033",
+  },
+
+  emptyDescription: {
+    fontSize: 12,
+    lineHeight: 19,
+    color: "#64748B",
+    textAlign: "center",
+    marginTop: 8,
+  },
+
+  emptyButton: {
+    backgroundColor: "#635BFF",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 17,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginTop: 20,
+  },
+
+  footerText: {
+    textAlign: "center",
     color: "#94A3B8",
     fontSize: 11,
-    marginTop: 8,
+    marginTop: 25,
   },
-  addCategoryCard: {
-    backgroundColor: "#FFFFFF",
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    marginBottom: 15,
-  },
-  addCategoryTitle: {
-    fontWeight: "700",
-    fontSize: 15,
-    color: "#172033",
-    marginBottom: 12,
-  },
-  categoryInput: {
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 11,
-    padding: 13,
-    color: "#172033",
-  },
-  addActions: {
-    flexDirection: "row",
+
+  modalOverlay: {
+    flex: 1,
     justifyContent: "flex-end",
-    alignItems: "center",
-    gap: 20,
-    marginTop: 15,
   },
-  cancelText: { color: "#64748B", fontWeight: "600" },
-  createButton: {
-    backgroundColor: "#635BFF",
-    paddingHorizontal: 17,
-    paddingVertical: 10,
-    borderRadius: 10,
+
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
   },
-  createText: { color: "#FFFFFF", fontWeight: "600" },
-  backButton: {
+
+  modalContent: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 25,
+    borderTopRightRadius: 25,
+    padding: 22,
+    paddingBottom: Platform.OS === "ios" ? 35 : 25,
+  },
+
+  modalHeader: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    justifyContent: "space-between",
+    alignItems: "flex-start",
     marginBottom: 25,
   },
-  backText: { color: "#635BFF", fontWeight: "600" },
-  categoryDetail: { alignItems: "center", marginBottom: 30 },
-  detailTitle: {
-    fontSize: 24,
+
+  modalTitle: {
+    fontSize: 21,
     fontWeight: "700",
     color: "#172033",
-    marginTop: 14,
   },
-  typeCard: {
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 17,
-    padding: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 13,
-    marginBottom: 13,
-  },
-  typeIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  typeContent: { flex: 1 },
-  typeTitle: { color: "#172033", fontSize: 16, fontWeight: "700" },
-  typeDescription: {
-    color: "#64748B",
+
+  modalSubtitle: {
     fontSize: 12,
-    lineHeight: 18,
+    color: "#64748B",
     marginTop: 5,
   },
-  countText: {
-    color: "#635BFF",
-    fontSize: 11,
-    fontWeight: "600",
-    marginTop: 8,
+
+  closeButton: {
+    backgroundColor: "#F1F5F9",
+    padding: 8,
+    borderRadius: 10,
   },
-  emptyText: { textAlign: "center", color: "#64748B", marginTop: 35 },
+
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#334155",
+    marginBottom: 10,
+    marginTop: 14,
+  },
+
+  modalInput: {
+    height: 50,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    color: "#172033",
+    fontSize: 14,
+  },
+
+  inputHint: {
+    fontSize: 10,
+    color: "#94A3B8",
+    textAlign: "right",
+    marginTop: 5,
+  },
+
+  colorContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 13,
+    marginVertical: 5,
+  },
+
+  colorOption: {
+    width: 35,
+    height: 35,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  selectedColor: {
+    borderWidth: 3,
+    borderColor: "#CBD5E1",
+  },
+
+  previewCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#F8FAFC",
+    padding: 13,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+
+  previewIcon: {
+    padding: 10,
+    borderRadius: 10,
+  },
+
+  previewName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#172033",
+  },
+
+  modalSaveButton: {
+    backgroundColor: "#635BFF",
+    height: 51,
+    borderRadius: 13,
+    marginTop: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 9,
+  },
+
+  modalSaveText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+
+  disabledButton: {
+    opacity: 0.5,
+  },
+
+  cancelButton: {
+    alignItems: "center",
+    padding: 14,
+    marginTop: 5,
+  },
+
+  cancelText: {
+    color: "#64748B",
+    fontSize: 13,
+    fontWeight: "600",
+  },
 });
