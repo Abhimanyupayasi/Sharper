@@ -319,9 +319,7 @@ export default function ChatScreen() {
             </Pressable>
           </View>
 
-          <Text style={styles.inputFooter}>
-            Powered by Groq · Sharper AI
-          </Text>
+          
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
