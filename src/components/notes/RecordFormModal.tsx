@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -10,6 +11,13 @@ import {
   View,
 } from "react-native";
 
+type RecordData = {
+  title: string;
+  content: string;
+  chapterNumber: number;
+  description: string;
+};
+
 type Props = {
   visible: boolean;
   title: string;
@@ -20,12 +28,8 @@ type Props = {
   initialDescription?: string;
   submitting: boolean;
   onClose: () => void;
-  onSave: (data: {
-    title: string;
-    content: string;
-    chapterNumber: number;
-    description: string;
-  }) => void;
+  onSave: (data: RecordData) => void;
+  onAutoSave?: (data: RecordData) => Promise<void> | void;
 };
 
 export default function RecordFormModal({
@@ -39,34 +43,99 @@ export default function RecordFormModal({
   submitting,
   onClose,
   onSave,
+  onAutoSave,
 }: Props) {
   const [name, setName] = useState("");
   const [content, setContent] = useState("");
   const [number, setNumber] = useState("1");
   const [description, setDescription] = useState("");
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
+
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialized = useRef(false);
+  const saving = useRef(false);
 
   useEffect(() => {
-    if (visible) {
-      setName(initialTitle);
-      setContent(initialContent);
-      setNumber(String(initialNumber));
-      setDescription(initialDescription);
+    if (!visible) {
+      initialized.current = false;
+      return;
     }
-  }, [
-    visible,
-    initialTitle,
-    initialContent,
-    initialNumber,
-    initialDescription,
-  ]);
+
+    setName(initialTitle);
+    setContent(initialContent);
+    setNumber(String(initialNumber));
+    setDescription(initialDescription);
+    setSaveStatus("saved");
+    initialized.current = true;
+  }, [visible, initialTitle, initialContent, initialNumber, initialDescription]);
+
+  const getData = (): RecordData => ({
+    title: name.trim(),
+    content: content.trim(),
+    chapterNumber: Number(number),
+    description: description.trim(),
+  });
+
+  useEffect(() => {
+    if (!visible || !initialized.current || !onAutoSave) return;
+
+    const valid =
+      name.trim().length > 0 &&
+      (mode === "point"
+        ? content.trim().length > 0
+        : Number.isInteger(Number(number)) && Number(number) > 0);
+
+    if (!valid) {
+      setSaveStatus("unsaved");
+      return;
+    }
+
+    if (timer.current) clearTimeout(timer.current);
+
+    setSaveStatus("unsaved");
+
+    timer.current = setTimeout(async () => {
+      if (saving.current) return;
+
+      try {
+        saving.current = true;
+        setSaveStatus("saving");
+        await onAutoSave(getData());
+        setSaveStatus("saved");
+      } catch (error) {
+        console.error("Auto-save error:", error);
+        setSaveStatus("unsaved");
+      } finally {
+        saving.current = false;
+      }
+    }, 2000);
+
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [name, content, number, description, visible, mode, onAutoSave]);
+
+  const handleContentChange = (value: string) => {
+    if (mode !== "point") {
+      setContent(value);
+      return;
+    }
+
+    const lines = value.split("\n");
+    const previous = lines[lines.length - 2];
+
+    // Add a bullet automatically after Enter.
+    if (value.endsWith("\n") && previous?.trim()) {
+      lines[lines.length - 1] = "• ";
+      setContent(lines.join("\n"));
+    } else {
+      setContent(value);
+    }
+  };
 
   const handleSave = () => {
-    onSave({
-      title: name.trim(),
-      content: content.trim(),
-      chapterNumber: Number(number),
-      description: description.trim(),
-    });
+    if (timer.current) clearTimeout(timer.current);
+    onSave(getData());
   };
 
   const valid =
@@ -118,13 +187,14 @@ export default function RecordFormModal({
               <>
                 <Text style={styles.label}>Bullet Points</Text>
                 <Text style={styles.helper}>
-                  Write one point per line. Each line becomes a separate bullet.
+                  Press Enter to create your next bullet point.
                 </Text>
+
                 <TextInput
                   style={[styles.input, styles.multiline]}
                   value={content}
-                  onChangeText={setContent}
-                  placeholder={"Achyutam Keshavam\nHare Krishna Hare Rama\nRadhe Radhe"}
+                  onChangeText={handleContentChange}
+                  placeholder={"• Achyutam Keshavam\n• Hare Krishna Hare Rama\n• Radhe Radhe"}
                   multiline
                   textAlignVertical="top"
                 />
@@ -144,6 +214,22 @@ export default function RecordFormModal({
             )}
           </ScrollView>
 
+          <View style={styles.statusRow}>
+            <View
+              style={[
+                styles.statusDot,
+                saveStatus === "saved" ? styles.savedDot : styles.pendingDot,
+              ]}
+            />
+            <Text style={styles.statusText}>
+              {saveStatus === "saving"
+                ? "Saving..."
+                : saveStatus === "saved"
+                  ? "All changes saved"
+                  : "Unsaved changes"}
+            </Text>
+          </View>
+
           <Pressable
             style={[styles.save, (!valid || submitting) && styles.disabled]}
             disabled={!valid || submitting}
@@ -157,7 +243,7 @@ export default function RecordFormModal({
           </Pressable>
 
           <Pressable style={styles.cancel} onPress={onClose}>
-            <Text style={styles.cancelText}>Cancel</Text>
+            <Text style={styles.cancelText}>Close</Text>
           </Pressable>
         </View>
       </View>
@@ -206,6 +292,23 @@ const styles = StyleSheet.create({
     color: "#172033",
   },
   multiline: { minHeight: 150 },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 14,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  savedDot: { backgroundColor: "#16A34A" },
+  pendingDot: { backgroundColor: "#F59E0B" },
+  statusText: {
+    fontSize: 12,
+    color: "#64748B",
+  },
   save: {
     height: 49,
     backgroundColor: "#635BFF",

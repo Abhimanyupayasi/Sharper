@@ -12,7 +12,14 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSQLiteContext } from "expo-sqlite";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ArrowLeft, Plus, Search, NotebookPen, BookOpen } from "lucide-react-native";
+import {
+  ArrowLeft,
+  Plus,
+  Search,
+  NotebookPen,
+  BookOpen,
+  Save,
+} from "lucide-react-native";
 
 import {
   getCategoryById,
@@ -33,10 +40,6 @@ import {
   updateChapter,
   deleteChapter,
   getChapterBlocks,
-  createChapterBlock,
-  updateChapterBlock,
-  deleteChapterBlock,
-  reorderChapterBlocks,
   type ChapterNote,
   type ChapterBlock,
   type ChapterBlockType,
@@ -46,6 +49,9 @@ import NoteCard from "../../components/notes/NoteCard";
 import RecordFormModal from "../../components/notes/RecordFormModal";
 
 type Tab = "point" | "chapter";
+
+const createId = () =>
+  `block-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 export default function CategoryDetailScreen() {
   const db = useSQLiteContext();
@@ -64,18 +70,21 @@ export default function CategoryDetailScreen() {
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editingPoint, setEditingPoint] = useState<PointNote | null>(null);
-  const [editingChapter, setEditingChapter] = useState<ChapterNote | null>(null);
+  const [editingChapter, setEditingChapter] = useState<ChapterNote | null>(
+    null
+  );
 
-  const [selectedChapter, setSelectedChapter] = useState<ChapterNote | null>(null);
-  const [blockContent, setBlockContent] = useState("");
-  const [blockType, setBlockType] = useState<ChapterBlockType>("paragraph");
-  const [editingBlock, setEditingBlock] = useState<ChapterBlock | null>(null);
+  const [selectedChapter, setSelectedChapter] =
+    useState<ChapterNote | null>(null);
+  const [chapterText, setChapterText] = useState("");
+  const [savingChapter, setSavingChapter] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!id) return;
 
     try {
       setLoading(true);
+
       const [categoryData, pointData, chapterData] = await Promise.all([
         getCategoryById(db, id),
         getPointNotes(db, id),
@@ -86,7 +95,7 @@ export default function CategoryDetailScreen() {
       setPoints(pointData);
       setChapters(chapterData);
     } catch (error) {
-      console.error("Category workspace loading error:", error);
+      console.error("Category loading error:", error);
       Alert.alert("Error", "Unable to load category contents.");
     } finally {
       setLoading(false);
@@ -148,13 +157,18 @@ export default function CategoryDetailScreen() {
       setSubmitting(true);
 
       if (tab === "point") {
-        if (!data.content) {
+        if (!data.content.trim()) {
           Alert.alert("Required", "Please enter note content.");
           return;
         }
 
         if (editingPoint) {
-          await updatePointNote(db, editingPoint.id, data.title, data.content);
+          await updatePointNote(
+            db,
+            editingPoint.id,
+            data.title,
+            data.content
+          );
         } else {
           await createPointNote(db, id!, data.title, data.content);
         }
@@ -189,11 +203,10 @@ export default function CategoryDetailScreen() {
       await loadData();
     } catch (error) {
       console.error("Save record error:", error);
-      const message = String(error).toLowerCase();
 
       Alert.alert(
         "Unable to save",
-        message.includes("unique")
+        String(error).toLowerCase().includes("unique")
           ? "This chapter number already exists in this category."
           : String(error)
       );
@@ -219,7 +232,7 @@ export default function CategoryDetailScreen() {
   const confirmDeleteChapter = (item: ChapterNote) => {
     Alert.alert(
       "Delete chapter",
-      `Delete Chapter ${item.chapter_number}: ${item.title} and all its content blocks?`,
+      `Delete Chapter ${item.chapter_number}: ${item.title} and its content?`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -228,12 +241,15 @@ export default function CategoryDetailScreen() {
           onPress: async () => {
             try {
               await deleteChapter(db, item.id);
+
               if (selectedChapter?.id === item.id) {
                 setSelectedChapter(null);
                 setBlocks([]);
+                setChapterText("");
               }
+
               await loadData();
-            } catch (error) {
+            } catch {
               Alert.alert("Error", "Unable to delete chapter.");
             }
           },
@@ -242,73 +258,175 @@ export default function CategoryDetailScreen() {
     );
   };
 
+  // Open chapter as one continuous document.
   const openChapter = async (item: ChapterNote) => {
     try {
       const result = await getChapterBlocks(db, item.id);
+
+      const content = result
+        .map((block) => {
+          switch (block.block_type) {
+            case "heading":
+              return `.h ${block.content}`;
+            case "bullet":
+              return `.b ${block.content}`;
+            case "numbered":
+              return `.n ${block.content}`;
+            case "paragraph":
+            default:
+              return block.content;
+          }
+        })
+        .join("\n\n");
+
       setSelectedChapter(item);
       setBlocks(result);
-    } catch {
+      setChapterText(content);
+    } catch (error) {
+      console.error(error);
       Alert.alert("Error", "Unable to load chapter content.");
     }
   };
 
-  const saveBlock = async () => {
-    if (!selectedChapter || !blockContent.trim()) {
-      Alert.alert("Required", "Enter some content first.");
+  // Live shortcut conversion and numbered-list continuation.
+  const handleChapterTextChange = (value: string) => {
+    let text = value;
+
+    // Convert shortcuts when followed by a space.
+    text = text.replace(/^\.h\s+/gm, "# ");
+    text = text.replace(/^\.b\s+/gm, "• ");
+    text = text.replace(/^\.p\s+/gm, "");
+    text = text.replace(/^\.n\s+/gm, "1. ");
+
+    // Continue numbered lists when Enter is pressed.
+    if (text.endsWith("\n")) {
+      const lines = text.split("\n");
+      const previousLine = lines[lines.length - 2] ?? "";
+      const match = previousLine.match(/^(\s*)(\d+)\.\s*(.*)$/);
+
+      if (match) {
+        // Empty numbered line + Enter again exits the list.
+        if (!match[3].trim()) {
+          lines.splice(lines.length - 2, 1);
+          text = lines.join("\n");
+        } else {
+          text += `${match[1]}${Number(match[2]) + 1}. `;
+        }
+      }
+    }
+
+    setChapterText(text);
+  };
+
+  const saveChapterPage = async () => {
+    if (!selectedChapter) return;
+
+    if (!chapterText.trim()) {
+      Alert.alert("Required", "Write some chapter content first.");
       return;
     }
 
     try {
-      if (editingBlock) {
-        await updateChapterBlock(db, editingBlock.id, blockContent);
-      } else {
-        await createChapterBlock(
-          db,
-          selectedChapter.id,
-          blockType,
-          blockContent,
-          blocks.length
-        );
+      setSavingChapter(true);
+
+      const lines = chapterText.split(/\r?\n/);
+      const parsed: {
+        type: ChapterBlockType;
+        content: string;
+      }[] = [];
+
+      let currentType: ChapterBlockType = "paragraph";
+      let currentContent: string[] = [];
+
+      const pushCurrent = () => {
+        const content = currentContent.join("\n").trim();
+
+        if (content) {
+          parsed.push({
+            type: currentType,
+            content,
+          });
+        }
+
+        currentContent = [];
+        currentType = "paragraph";
+      };
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+
+        if (!line) {
+          pushCurrent();
+          continue;
+        }
+
+        if (line.startsWith("# ")) {
+          pushCurrent();
+          currentType = "heading";
+          currentContent.push(line.slice(2).trim());
+        } else if (line.startsWith("• ") || line.startsWith("- ")) {
+          pushCurrent();
+          currentType = "bullet";
+          currentContent.push(line.slice(2).trim());
+        } else if (/^\d+\.\s/.test(line)) {
+          pushCurrent();
+          currentType = "numbered";
+          currentContent.push(line.replace(/^\d+\.\s*/, "").trim());
+        } else {
+          if (currentType !== "paragraph" && currentContent.length > 0) {
+            pushCurrent();
+          }
+
+          currentType = "paragraph";
+          currentContent.push(line);
+        }
       }
 
-      setBlockContent("");
-      setEditingBlock(null);
+      pushCurrent();
+
+      const now = new Date().toISOString();
+
+      // Replace all chapter content in one SQLite transaction.
+      await db.withTransactionAsync(async () => {
+        await db.runAsync(
+          "DELETE FROM chapter_blocks WHERE chapter_id = ?",
+          selectedChapter.id
+        );
+
+        for (let index = 0; index < parsed.length; index++) {
+          const block = parsed[index];
+
+          await db.runAsync(
+            `INSERT INTO chapter_blocks
+              (id, chapter_id, block_type, content, position, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            createId(),
+            selectedChapter.id,
+            block.type,
+            block.content,
+            index,
+            now,
+            now
+          );
+        }
+
+        await db.runAsync(
+          "UPDATE chapter_notes SET updated_at = ? WHERE id = ?",
+          now,
+          selectedChapter.id
+        );
+      });
+
       setBlocks(await getChapterBlocks(db, selectedChapter.id));
       await loadData();
-    } catch {
-      Alert.alert("Error", "Unable to save content block.");
+
+      Alert.alert("Saved", "Chapter updated successfully.");
+    } catch (error) {
+      console.error("Chapter save error:", error);
+      Alert.alert("Error", "Unable to save chapter content.");
+    } finally {
+      setSavingChapter(false);
     }
-  };
-
-  const removeBlock = (block: ChapterBlock) => {
-    Alert.alert("Delete block", "Delete this content block?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          if (!selectedChapter) return;
-          await deleteChapterBlock(db, block.id);
-          setBlocks(await getChapterBlocks(db, selectedChapter.id));
-          await loadData();
-        },
-      },
-    ]);
-  };
-
-  const moveBlock = async (index: number, direction: -1 | 1) => {
-    if (!selectedChapter) return;
-    const next = [...blocks];
-    const target = index + direction;
-    if (target < 0 || target >= next.length) return;
-
-    [next[index], next[target]] = [next[target], next[index]];
-    setBlocks(next);
-    await reorderChapterBlocks(
-      db,
-      selectedChapter.id,
-      next.map((item) => item.id)
-    );
   };
 
   if (loading) {
@@ -346,103 +464,73 @@ export default function CategoryDetailScreen() {
       </View>
 
       {selectedChapter ? (
-        <ScrollView contentContainerStyle={styles.content}>
-          <Pressable
-            style={styles.backToChapters}
-            onPress={() => setSelectedChapter(null)}
-          >
-            <ArrowLeft color="#635BFF" size={17} />
-            <Text style={styles.backText}>Back to chapters</Text>
-          </Pressable>
-
-          <Text style={styles.chapterHeading}>
-            Chapter {selectedChapter.chapter_number}: {selectedChapter.title}
-          </Text>
-          {!!selectedChapter.description && (
-            <Text style={styles.description}>{selectedChapter.description}</Text>
-          )}
-
-          <Text style={styles.sectionTitle}>Chapter Content</Text>
-
-          {blocks.map((block, index) => (
-            <View key={block.id} style={styles.blockCard}>
-              <Text style={styles.blockType}>{block.block_type.toUpperCase()}</Text>
-              <Text style={block.block_type === "heading" ? styles.blockHeading : styles.blockText}>
-                {block.block_type === "bullet"
-                  ? `• ${block.content}`
-                  : block.block_type === "numbered"
-                    ? `${index + 1}. ${block.content}`
-                    : block.content}
-              </Text>
-
-              <View style={styles.blockActions}>
-                <Pressable onPress={() => moveBlock(index, -1)}>
-                  <Text style={styles.actionText}>↑</Text>
-                </Pressable>
-                <Pressable onPress={() => moveBlock(index, 1)}>
-                  <Text style={styles.actionText}>↓</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => {
-                    setEditingBlock(block);
-                    setBlockType(block.block_type);
-                    setBlockContent(block.content);
-                  }}
-                >
-                  <Text style={styles.actionText}>Edit</Text>
-                </Pressable>
-                <Pressable onPress={() => removeBlock(block)}>
-                  <Text style={styles.deleteText}>Delete</Text>
-                </Pressable>
-              </View>
-            </View>
-          ))}
-
-          <Text style={styles.sectionTitle}>
-            {editingBlock ? "Edit Content Block" : "Add Content Block"}
-          </Text>
-
-          <View style={styles.typeRow}>
-            {(["heading", "paragraph", "bullet", "numbered"] as ChapterBlockType[]).map((type) => (
-              <Pressable
-                key={type}
-                onPress={() => setBlockType(type)}
-                style={[styles.typeButton, blockType === type && styles.typeSelected]}
-              >
-                <Text style={[styles.typeText, blockType === type && styles.typeTextSelected]}>
-                  {type}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <TextInput
-            style={[styles.input, styles.multiline]}
-            placeholder="Write chapter content..."
-            value={blockContent}
-            onChangeText={setBlockContent}
-            multiline
-            textAlignVertical="top"
-          />
-
-          <Pressable style={styles.primaryButton} onPress={saveBlock}>
-            <Text style={styles.primaryText}>
-              {editingBlock ? "Update Block" : "Add Block"}
-            </Text>
-          </Pressable>
-
-          {!!editingBlock && (
+        <View style={styles.editorContainer}>
+          <View style={styles.editorHeader}>
             <Pressable
-              style={styles.cancelButton}
+              style={styles.backToChapters}
               onPress={() => {
-                setEditingBlock(null);
-                setBlockContent("");
+                setSelectedChapter(null);
+                setChapterText("");
+                setBlocks([]);
               }}
             >
-              <Text style={styles.backText}>Cancel editing</Text>
+              <ArrowLeft color="#635BFF" size={17} />
+              <Text style={styles.backText}>Back to chapters</Text>
             </Pressable>
-          )}
-        </ScrollView>
+
+            <Pressable
+              style={styles.saveButton}
+              onPress={saveChapterPage}
+              disabled={savingChapter}
+            >
+              {savingChapter ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <>
+                  <Save color="#FFFFFF" size={16} />
+                  <Text style={styles.saveButtonText}>Save</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.editorPage}
+            contentContainerStyle={styles.editorContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text style={styles.chapterNumber}>
+              CHAPTER {selectedChapter.chapter_number}
+            </Text>
+
+            <Text style={styles.chapterTitle}>
+              {selectedChapter.title}
+            </Text>
+
+            {!!selectedChapter.description && (
+              <Text style={styles.chapterDescription}>
+                {selectedChapter.description}
+              </Text>
+            )}
+
+            <TextInput
+              value={chapterText}
+              onChangeText={handleChapterTextChange}
+              multiline
+              autoCorrect
+              spellCheck
+              textAlignVertical="top"
+              placeholder={
+                "Start writing your chapter...\n\n.h Heading\n.p Paragraph\n.b Bullet\n.n Numbered list"
+              }
+              style={styles.chapterEditor}
+            />
+
+            <Text style={styles.editorHint}>
+              Shortcuts: .h heading · .p paragraph · .b bullet · .n numbered
+            </Text>
+          </ScrollView>
+        </View>
       ) : (
         <>
           <View style={styles.tabs}>
@@ -453,8 +541,16 @@ export default function CategoryDetailScreen() {
               }}
               style={[styles.tab, tab === "point" && styles.activeTab]}
             >
-              <NotebookPen color={tab === "point" ? "#635BFF" : "#64748B"} size={17} />
-              <Text style={[styles.tabText, tab === "point" && styles.activeTabText]}>
+              <NotebookPen
+                color={tab === "point" ? "#635BFF" : "#64748B"}
+                size={17}
+              />
+              <Text
+                style={[
+                  styles.tabText,
+                  tab === "point" && styles.activeTabText,
+                ]}
+              >
                 Point Notes ({points.length})
               </Text>
             </Pressable>
@@ -466,8 +562,16 @@ export default function CategoryDetailScreen() {
               }}
               style={[styles.tab, tab === "chapter" && styles.activeTab]}
             >
-              <BookOpen color={tab === "chapter" ? "#635BFF" : "#64748B"} size={17} />
-              <Text style={[styles.tabText, tab === "chapter" && styles.activeTabText]}>
+              <BookOpen
+                color={tab === "chapter" ? "#635BFF" : "#64748B"}
+                size={17}
+              />
+              <Text
+                style={[
+                  styles.tabText,
+                  tab === "chapter" && styles.activeTabText,
+                ]}
+              >
                 Chapters ({chapters.length})
               </Text>
             </Pressable>
@@ -478,7 +582,9 @@ export default function CategoryDetailScreen() {
             <TextInput
               value={search}
               onChangeText={setSearch}
-              placeholder={tab === "point" ? "Search notes..." : "Search chapters..."}
+              placeholder={
+                tab === "point" ? "Search notes..." : "Search chapters..."
+              }
               style={styles.searchInput}
             />
           </View>
@@ -487,6 +593,7 @@ export default function CategoryDetailScreen() {
             <Text style={styles.sectionTitle}>
               {tab === "point" ? "Your Point Notes" : "Your Chapters"}
             </Text>
+
             <Pressable style={styles.addButton} onPress={openCreate}>
               <Plus color="#FFFFFF" size={17} />
               <Text style={styles.addText}>Add New</Text>
@@ -505,7 +612,10 @@ export default function CategoryDetailScreen() {
                     onPress={() =>
                       Alert.alert(item.title, item.content, [
                         { text: "Close" },
-                        { text: "Edit", onPress: () => openEditPoint(item) },
+                        {
+                          text: "Edit",
+                          onPress: () => openEditPoint(item),
+                        },
                         {
                           text: "Delete",
                           style: "destructive",
@@ -516,7 +626,10 @@ export default function CategoryDetailScreen() {
                     onMenu={() =>
                       Alert.alert(item.title, "Choose an action", [
                         { text: "Cancel", style: "cancel" },
-                        { text: "Edit", onPress: () => openEditPoint(item) },
+                        {
+                          text: "Edit",
+                          onPress: () => openEditPoint(item),
+                        },
                         {
                           text: "Delete",
                           style: "destructive",
@@ -527,7 +640,9 @@ export default function CategoryDetailScreen() {
                   />
                 ))
               ) : (
-                <Text style={styles.emptyText}>No Point Notes found. Create your first note.</Text>
+                <Text style={styles.emptyText}>
+                  No Point Notes found. Create your first note.
+                </Text>
               )
             ) : filteredChapters.length ? (
               filteredChapters.map((item) => (
@@ -540,8 +655,14 @@ export default function CategoryDetailScreen() {
                   onMenu={() =>
                     Alert.alert(item.title, "Choose an action", [
                       { text: "Cancel", style: "cancel" },
-                      { text: "Open content", onPress: () => openChapter(item) },
-                      { text: "Edit", onPress: () => openEditChapter(item) },
+                      {
+                        text: "Open chapter",
+                        onPress: () => openChapter(item),
+                      },
+                      {
+                        text: "Edit details",
+                        onPress: () => openEditChapter(item),
+                      },
                       {
                         text: "Delete",
                         style: "destructive",
@@ -552,7 +673,9 @@ export default function CategoryDetailScreen() {
                 />
               ))
             ) : (
-              <Text style={styles.emptyText}>No chapters found. Create your first chapter.</Text>
+              <Text style={styles.emptyText}>
+                No chapters found. Create your first chapter.
+              </Text>
             )}
           </ScrollView>
         </>
@@ -562,8 +685,12 @@ export default function CategoryDetailScreen() {
         visible={modalVisible}
         title={
           editingPoint || editingChapter
-            ? tab === "point" ? "Edit Point Note" : "Edit Chapter"
-            : tab === "point" ? "Create Point Note" : "Create Chapter"
+            ? tab === "point"
+              ? "Edit Point Note"
+              : "Edit Chapter"
+            : tab === "point"
+              ? "Create Point Note"
+              : "Create Chapter"
         }
         mode={tab}
         initialTitle={editingPoint?.title ?? editingChapter?.title ?? ""}
@@ -579,13 +706,18 @@ export default function CategoryDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#F8FAFC" },
+  safe: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+  },
+
   header: {
     flexDirection: "row",
     alignItems: "center",
     gap: 13,
     padding: 20,
   },
+
   backButton: {
     width: 40,
     height: 40,
@@ -594,8 +726,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  heading: { fontSize: 23, fontWeight: "800", color: "#172033" },
-  subheading: { fontSize: 12, color: "#64748B", marginTop: 4 },
+
+  heading: {
+    fontSize: 23,
+    fontWeight: "800",
+    color: "#172033",
+  },
+
+  subheading: {
+    fontSize: 12,
+    color: "#64748B",
+    marginTop: 4,
+  },
+
   tabs: {
     flexDirection: "row",
     marginHorizontal: 18,
@@ -603,6 +746,7 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     padding: 4,
   },
+
   tab: {
     flex: 1,
     flexDirection: "row",
@@ -612,9 +756,21 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 10,
   },
-  activeTab: { backgroundColor: "#FFFFFF" },
-  tabText: { color: "#64748B", fontSize: 11, fontWeight: "600" },
-  activeTabText: { color: "#635BFF" },
+
+  activeTab: {
+    backgroundColor: "#FFFFFF",
+  },
+
+  tabText: {
+    color: "#64748B",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  activeTabText: {
+    color: "#635BFF",
+  },
+
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
@@ -628,7 +784,13 @@ const styles = StyleSheet.create({
     borderColor: "#E2E8F0",
     borderRadius: 12,
   },
-  searchInput: { flex: 1, height: 46, color: "#172033" },
+
+  searchInput: {
+    flex: 1,
+    height: 46,
+    color: "#172033",
+  },
+
   listHeader: {
     paddingHorizontal: 20,
     paddingBottom: 12,
@@ -636,7 +798,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
-  sectionTitle: { fontSize: 17, fontWeight: "700", color: "#172033" },
+
+  sectionTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#172033",
+  },
+
   addButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -646,54 +814,119 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 10,
   },
-  addText: { color: "#FFFFFF", fontWeight: "700", fontSize: 12 },
-  content: { paddingHorizontal: 18, paddingBottom: 35 },
+
+  addText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+
+  content: {
+    paddingHorizontal: 18,
+    paddingBottom: 35,
+  },
+
   emptyText: {
     textAlign: "center",
     color: "#94A3B8",
     padding: 35,
     lineHeight: 21,
   },
-  emptyTitle: { fontSize: 18, fontWeight: "700", textAlign: "center" },
-  backToChapters: { flexDirection: "row", gap: 7, alignItems: "center", marginBottom: 20 },
-  backText: { color: "#635BFF", fontWeight: "600" },
-  chapterHeading: { fontSize: 22, fontWeight: "800", color: "#172033" },
-  description: { color: "#64748B", marginTop: 8, lineHeight: 20 },
-  blockCard: {
-    backgroundColor: "#FFFFFF",
-    padding: 15,
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    marginTop: 10,
+
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    textAlign: "center",
   },
-  blockType: { fontSize: 9, color: "#635BFF", fontWeight: "800", marginBottom: 8 },
-  blockHeading: { fontSize: 18, fontWeight: "800", color: "#172033" },
-  blockText: { fontSize: 14, color: "#334155", lineHeight: 22 },
-  blockActions: { flexDirection: "row", gap: 20, marginTop: 12 },
-  actionText: { color: "#635BFF", fontWeight: "700" },
-  deleteText: { color: "#DC2626", fontWeight: "600" },
-  typeRow: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginVertical: 12 },
-  typeButton: { borderWidth: 1, borderColor: "#CBD5E1", padding: 9, borderRadius: 9 },
-  typeSelected: { backgroundColor: "#635BFF", borderColor: "#635BFF" },
-  typeText: { fontSize: 11, color: "#475569", textTransform: "capitalize" },
-  typeTextSelected: { color: "#FFFFFF" },
-  input: {
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 12,
-    padding: 13,
-    color: "#172033",
+
+  backText: {
+    color: "#635BFF",
+    fontWeight: "600",
   },
-  multiline: { minHeight: 120, textAlignVertical: "top" },
-  primaryButton: {
-    backgroundColor: "#635BFF",
-    padding: 15,
-    borderRadius: 12,
+
+  editorContainer: {
+    flex: 1,
+    paddingBottom: 10,
+  },
+
+  editorHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
-    marginTop: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
   },
-  primaryText: { color: "#FFFFFF", fontWeight: "700" },
-  cancelButton: { alignItems: "center", padding: 12 },
+
+  backToChapters: {
+    flexDirection: "row",
+    gap: 7,
+    alignItems: "center",
+  },
+
+  saveButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    backgroundColor: "#635BFF",
+    paddingHorizontal: 20,
+    paddingVertical: 11,
+    borderRadius: 10,
+    minWidth: 85,
+  },
+
+  saveButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+
+  editorPage: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+    marginHorizontal: 14,
+    borderRadius: 16,
+  },
+
+  editorContent: {
+    padding: 22,
+    paddingBottom: 100,
+  },
+
+  chapterNumber: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#635BFF",
+    letterSpacing: 1.5,
+    marginBottom: 12,
+  },
+
+  chapterTitle: {
+    fontSize: 27,
+    fontWeight: "800",
+    color: "#172033",
+    marginBottom: 10,
+  },
+
+  chapterDescription: {
+    fontSize: 14,
+    color: "#64748B",
+    lineHeight: 22,
+    marginBottom: 18,
+  },
+
+  chapterEditor: {
+    minHeight: 500,
+    fontSize: 16,
+    lineHeight: 29,
+    color: "#334155",
+    padding: 0,
+    textAlignVertical: "top",
+  },
+
+  editorHint: {
+    fontSize: 11,
+    color: "#94A3B8",
+    marginTop: 25,
+    lineHeight: 18,
+  },
 });
