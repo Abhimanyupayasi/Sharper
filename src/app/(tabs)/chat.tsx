@@ -1,13 +1,15 @@
-import { useState } from "react";
+
+import { useEffect, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  TextInput,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -17,53 +19,128 @@ import {
   Sparkles,
   MessageCircle,
   BookOpen,
-  ListTodo,
-  CalendarDays,
-  Lock,
+  Code,
+  PenLine,
 } from "lucide-react-native";
+
+import {
+  getGroqReply,
+  type GroqMessage,
+} from "../../services/groq";
+
+type ChatMessage = {
+  id: number;
+  text: string;
+  sender: "user" | "ai";
+};
 
 const suggestions = [
   {
-    title: "My pending tasks",
-    subtitle: "Find tasks I need to complete",
-    icon: ListTodo,
-  },
-  {
-    title: "Chemistry notes",
-    subtitle: "Summarize my saved notes",
+    title: "Explain a concept",
+    subtitle: "Learn something new, step by step",
     icon: BookOpen,
+    prompt: "Explain a technical concept in simple language.",
   },
   {
-    title: "Today's notes",
-    subtitle: "What did I write today?",
-    icon: CalendarDays,
+    title: "Help me with coding",
+    subtitle: "Understand or debug some code",
+    icon: Code,
+    prompt: "Help me improve my programming skills.",
+  },
+  {
+    title: "Help me write",
+    subtitle: "Create, improve, or rewrite content",
+    icon: PenLine,
+    prompt: "Help me write something professionally.",
   },
 ];
 
 export default function ChatScreen() {
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<
-    { id: number; text: string; sender: "user" | "ai" }[]
-  >([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const sendMessage = (text = message) => {
+  const scrollRef = useRef<ScrollView>(null);
+  const requestId = useRef(0);
+
+  useEffect(() => {
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, [messages, isLoading]);
+
+  const sendMessage = async (text = message) => {
     const trimmed = text.trim();
-    if (!trimmed) return;
 
-    setMessages((previous) => [
-      ...previous,
-      { id: Date.now(), text: trimmed, sender: "user" },
-    ]);
+    if (!trimmed || isLoading) return;
+
+    const currentRequest = ++requestId.current;
+
+    const userMessage: ChatMessage = {
+      id: Date.now(),
+      text: trimmed,
+      sender: "user",
+    };
+
+    const updatedMessages = [...messages, userMessage];
+
+    setMessages(updatedMessages);
     setMessage("");
+    setIsLoading(true);
+
+    try {
+      const conversation: GroqMessage[] = updatedMessages.map(
+        (item) => ({
+          role: item.sender === "user" ? "user" : "assistant",
+          content: item.text,
+        }),
+      );
+
+      const reply = await getGroqReply(conversation);
+
+      if (requestId.current !== currentRequest) return;
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: Date.now() + 1,
+          text: reply,
+          sender: "ai",
+        },
+      ]);
+    } catch (error) {
+      if (requestId.current !== currentRequest) return;
+
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : "Something went wrong. Please try again.";
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: Date.now() + 1,
+          text: `Sorry, I couldn't respond.\n\n${errorMessage}`,
+          sender: "ai",
+        },
+      ]);
+    } finally {
+      if (requestId.current === currentRequest) {
+        setIsLoading(false);
+      }
+    }
   };
 
   const startNewChat = () => {
+    requestId.current += 1;
     setMessages([]);
     setMessage("");
+    setIsLoading(false);
   };
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+    <SafeAreaView
+      style={styles.safeArea}
+      edges={["top", "left", "right"]}
+    >
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -75,13 +152,19 @@ export default function ChatScreen() {
             <View style={styles.logo}>
               <Sparkles size={21} color="#FFFFFF" />
             </View>
+
             <View>
-              <Text style={styles.headerTitle}>AI Assistant</Text>
-              <Text style={styles.headerSubtitle}>Your personal study companion</Text>
+              <Text style={styles.headerTitle}>Sharper AI</Text>
+              <Text style={styles.headerSubtitle}>
+                Your intelligent AI companion
+              </Text>
             </View>
           </View>
 
-          <Pressable style={styles.newChatButton} onPress={startNewChat}>
+          <Pressable
+            style={styles.newChatButton}
+            onPress={startNewChat}
+          >
             <Plus size={19} color="#475569" />
             <Text style={styles.newChatText}>New</Text>
           </Pressable>
@@ -91,6 +174,7 @@ export default function ChatScreen() {
 
         {/* Chat content */}
         <ScrollView
+          ref={scrollRef}
           style={styles.chatArea}
           contentContainerStyle={styles.chatContent}
           keyboardShouldPersistTaps="handled"
@@ -101,20 +185,22 @@ export default function ChatScreen() {
                 <Bot size={34} color="#635BFF" />
               </View>
 
-              <Text style={styles.welcomeTitle}>Hello! How can I help?</Text>
-              <Text style={styles.welcomeDescription}>
-                Ask questions about your notes, chapters, and daily tasks.
-                Your personal knowledge assistant is coming soon.
+              <Text style={styles.welcomeTitle}>
+                Hello! I'm Sharper AI.
               </Text>
 
-              <View style={styles.comingSoonBadge}>
-                <Lock size={12} color="#7C3AED" />
-                <Text style={styles.comingSoonText}>AI integration coming soon</Text>
-              </View>
+              <Text style={styles.welcomeDescription}>
+                Ask me anything. Explore ideas, learn new concepts,
+                write code, solve problems, or simply have a conversation.
+              </Text>
 
               <View style={styles.suggestionHeader}>
-                <Text style={styles.suggestionHeading}>TRY ASKING</Text>
-                <Text style={styles.suggestionCount}>3 suggestions</Text>
+                <Text style={styles.suggestionHeading}>
+                  TRY ASKING
+                </Text>
+                <Text style={styles.suggestionCount}>
+                  3 suggestions
+                </Text>
               </View>
 
               {suggestions.map((item) => {
@@ -124,14 +210,16 @@ export default function ChatScreen() {
                   <Pressable
                     key={item.title}
                     style={styles.suggestionCard}
-                    onPress={() => sendMessage(item.title)}
+                    onPress={() => sendMessage(item.prompt)}
                   >
                     <View style={styles.suggestionIcon}>
                       <Icon size={20} color="#635BFF" />
                     </View>
 
                     <View style={styles.suggestionTextContainer}>
-                      <Text style={styles.suggestionTitle}>{item.title}</Text>
+                      <Text style={styles.suggestionTitle}>
+                        {item.title}
+                      </Text>
                       <Text style={styles.suggestionSubtitle}>
                         {item.subtitle}
                       </Text>
@@ -149,7 +237,8 @@ export default function ChatScreen() {
                   key={item.id}
                   style={[
                     styles.messageRow,
-                    item.sender === "user" && styles.userMessageRow,
+                    item.sender === "user" &&
+                      styles.userMessageRow,
                   ]}
                 >
                   {item.sender === "ai" && (
@@ -169,7 +258,8 @@ export default function ChatScreen() {
                     <Text
                       style={[
                         styles.messageText,
-                        item.sender === "user" && styles.userMessageText,
+                        item.sender === "user" &&
+                          styles.userMessageText,
                       ]}
                     >
                       {item.text}
@@ -178,12 +268,22 @@ export default function ChatScreen() {
                 </View>
               ))}
 
-              <View style={styles.placeholderNotice}>
-                <Lock size={14} color="#7C3AED" />
-                <Text style={styles.placeholderNoticeText}>
-                  AI responses will be available after integration.
-                </Text>
-              </View>
+              {isLoading && (
+                <View style={styles.messageRow}>
+                  <View style={styles.smallBotIcon}>
+                    <Bot size={17} color="#635BFF" />
+                  </View>
+
+                  <View style={styles.aiBubble}>
+                    <View style={styles.loadingRow}>
+                      <ActivityIndicator color="#635BFF" size="small" />
+                      <Text style={styles.loadingText}>
+                        Sharper AI is thinking...
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              )}
             </View>
           )}
         </ScrollView>
@@ -193,28 +293,34 @@ export default function ChatScreen() {
           <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
-              placeholder="Ask anything about your notes..."
+              placeholder="Ask Sharper AI anything..."
               placeholderTextColor="#94A3B8"
               value={message}
               onChangeText={setMessage}
               multiline
-              maxLength={1000}
+              maxLength={4000}
+              editable={!isLoading}
             />
 
             <Pressable
               style={[
                 styles.sendButton,
-                !message.trim() && styles.sendButtonDisabled,
+                (!message.trim() || isLoading) &&
+                  styles.sendButtonDisabled,
               ]}
               onPress={() => sendMessage()}
-              disabled={!message.trim()}
+              disabled={!message.trim() || isLoading}
             >
-              <Send size={19} color="#FFFFFF" />
+              {isLoading ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Send size={19} color="#FFFFFF" />
+              )}
             </Pressable>
           </View>
 
           <Text style={styles.inputFooter}>
-            Your notes stay on your device. AI features are not active yet.
+            Powered by Groq · Sharper AI
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -316,22 +422,6 @@ const styles = StyleSheet.create({
     marginTop: 9,
     marginHorizontal: 10,
   },
-  comingSoonBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "center",
-    gap: 6,
-    backgroundColor: "#F3EFFF",
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 20,
-    marginTop: 16,
-  },
-  comingSoonText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#7C3AED",
-  },
   suggestionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -384,6 +474,7 @@ const styles = StyleSheet.create({
   messagesContainer: {
     gap: 16,
     paddingTop: 10,
+    paddingBottom: 20,
   },
   messageRow: {
     flexDirection: "row",
@@ -412,10 +503,13 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 5,
   },
   aiBubble: {
+    maxWidth: "85%",
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: "#E2E8F0",
     borderBottomLeftRadius: 5,
+    padding: 12,
+    borderRadius: 16,
   },
   messageText: {
     fontSize: 14,
@@ -425,17 +519,14 @@ const styles = StyleSheet.create({
   userMessageText: {
     color: "#FFFFFF",
   },
-  placeholderNotice: {
+  loadingRow: {
     flexDirection: "row",
     alignItems: "center",
-    alignSelf: "center",
-    gap: 7,
-    marginTop: 12,
-    padding: 10,
+    gap: 9,
   },
-  placeholderNoticeText: {
-    fontSize: 11,
-    color: "#7C3AED",
+  loadingText: {
+    fontSize: 12,
+    color: "#64748B",
   },
   inputSection: {
     paddingHorizontal: 16,
@@ -458,7 +549,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    maxHeight: 100,
+    maxHeight: 110,
     paddingTop: 12,
     paddingBottom: 12,
     fontSize: 13,
