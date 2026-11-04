@@ -1,8 +1,10 @@
 import type { SQLiteDatabase } from "expo-sqlite";
 import { DATABASE_SCHEMA } from "./schema";
+import { initializeTodoTable } from "./repositories/todo.repository";
 
 export async function initializeDatabase(db: SQLiteDatabase) {
   await db.execAsync(DATABASE_SCHEMA);
+  await initializeTodoTable(db);
 
   // Migrate existing Point Notes into individual bullet items.
   const legacyNotes = await db.getAllAsync<{
